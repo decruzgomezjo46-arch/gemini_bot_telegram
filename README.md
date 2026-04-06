@@ -38,4 +38,4 @@ El bot se conectará a Telegram y estará listo para responder mensajes.
 
 - Responde en el mismo idioma que el usuario
 - Mantiene el contexto de la conversación por usuario
-- Usa el modelo Gemini 1.5 Flash (rápido y eficiente)
+- Usa el modelo Gemini 2.5 Flash (rápido y eficiente)
