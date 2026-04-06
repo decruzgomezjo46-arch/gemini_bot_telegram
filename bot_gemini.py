@@ -495,12 +495,10 @@ def main() -> None:
     # Iniciar el bot (polling)
     logger.info("El bot está en línea y escuchando mensajes...")
     
-    # Python 3.14+ requiere crear un event loop explícitamente
-    import sys
-    if sys.version_info >= (3, 10):
-        # Python 3.10+ usa asyncio.new_event_loop() automáticamente
-        asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    
+    # Python 3.14+ en algunos entornos no tiene un loop activo todavía.
+    # Creamos uno explícito para evitar el error de "no current event loop".
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
