@@ -3,13 +3,23 @@ import time
 import logging
 import json
 import asyncio
+import re
+import uuid
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 import requests
 from PIL import Image
 import io
 import tempfile
 from dotenv import load_dotenv
 import google.generativeai as genai
+import pytz
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -77,11 +87,25 @@ AVAILABLE_MODELS = {
 
 # Archivos de configuración
 USER_PREFS_FILE = Path("user_preferences.json")
+REMINDERS_FILE = Path("reminders.json")
+
+# Configuración Google Calendar
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 # Diccionarios para almacenar datos
 user_settings: dict[int, dict] = {}
 model_instances: dict[str, any] = {}
 chat_sessions: dict[int, any] = {}
+reminders: dict[int, list[dict]] = {}
+groq_chat_history: dict[int, list[dict]] = {}
+calendar_service = None
+
+# Configuración de Zona Horaria (puedes cambiarla en el .env)
+DEFAULT_TIMEZONE = os.getenv("TIMEZONE", "America/Mexico_City")
+tz = pytz.timezone(DEFAULT_TIMEZONE)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_BASE = os.getenv("GROQ_API_BASE", "https://api.groq.com/v1")
@@ -108,6 +132,135 @@ def load_user_preferences():
             logger.info(f"Preferencias cargadas para {len(user_settings)} usuarios")
         except Exception as e:
             logger.warning(f"Error cargando preferencias: {e}")
+
+
+def load_reminders():
+    """Cargar recordatorios de usuarios desde JSON"""
+    global reminders
+    if REMINDERS_FILE.exists():
+        try:
+            raw = json.loads(REMINDERS_FILE.read_text())
+            reminders = {int(uid): data for uid, data in raw.items()}
+            logger.info(f"Recordatorios cargados para {len(reminders)} usuarios")
+        except Exception as e:
+            reminders = {}
+            logger.warning(f"Error cargando recordatorios: {e}")
+
+
+def save_reminders():
+    """Guardar recordatorios de usuarios en JSON"""
+    try:
+        data = {str(user_id): reminder_list for user_id, reminder_list in reminders.items()}
+        REMINDERS_FILE.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        logger.error(f"Error guardando recordatorios: {e}")
+
+
+def load_calendar_credentials() -> Credentials | None:
+    """Cargar credenciales de servicio de Google Calendar desde env."""
+    if GOOGLE_SERVICE_ACCOUNT_JSON:
+        try:
+            info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            return Credentials.from_service_account_info(info, scopes=GOOGLE_CALENDAR_SCOPES)
+        except Exception as e:
+            logger.error(f"Error leyendo GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+            return None
+
+    if GOOGLE_SERVICE_ACCOUNT_FILE:
+        try:
+            return Credentials.from_service_account_file(GOOGLE_SERVICE_ACCOUNT_FILE, scopes=GOOGLE_CALENDAR_SCOPES)
+        except Exception as e:
+            logger.error(f"Error leyendo GOOGLE_SERVICE_ACCOUNT_FILE: {e}")
+            return None
+
+    return None
+
+
+def get_calendar_service():
+    """Obtener cliente de Google Calendar."""
+    global calendar_service
+    if calendar_service is None:
+        creds = load_calendar_credentials()
+        if not creds:
+            raise RuntimeError("Google Calendar no está configurado. Define GOOGLE_SERVICE_ACCOUNT_JSON o GOOGLE_SERVICE_ACCOUNT_FILE.")
+        calendar_service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+    return calendar_service
+
+
+def get_calendar_events(days: int = 7, max_results: int = 10) -> list[dict]:
+    service = get_calendar_service()
+    now = datetime.utcnow().isoformat() + "Z"
+    later = (datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
+    events_result = service.events().list(
+        calendarId=GOOGLE_CALENDAR_ID,
+        timeMin=now,
+        timeMax=later,
+        maxResults=max_results,
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+    return events_result.get("items", [])
+
+
+def create_calendar_event(summary: str, start_time: datetime, duration_minutes: int = 60, description: str = "") -> dict:
+    service = get_calendar_service()
+    end_time = start_time + timedelta(minutes=duration_minutes)
+    event_body = {
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": start_time.isoformat(), "timeZone": "UTC"},
+        "end": {"dateTime": end_time.isoformat(), "timeZone": "UTC"}
+    }
+    event = service.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event_body).execute()
+    return event
+
+
+def parse_datetime(value: str) -> datetime | None:
+    """Parsear fecha/hora en formato ISO o 'YYYY-MM-DD HH:MM'."""
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M")
+        except Exception:
+            return None
+
+
+def parse_notify_before(value: str) -> int:
+    """Parsear minutos antes para notificación de recordatorio."""
+    if not value:
+        return 10
+    value = value.strip().lower()
+    if value.isdigit():
+        return int(value)
+    match = re.search(r"(\d+)", value)
+    if match:
+        return int(match.group(1))
+    return 10
+
+
+def add_reminder(user_id: int, text: str, target_time: datetime, notify_before: int) -> str:
+    reminder_id = str(uuid.uuid4())
+    reminder_data = {
+        "id": reminder_id,
+        "text": text,
+        "time": target_time.isoformat(),
+        "notify_before": notify_before,
+        "notified": False
+    }
+    reminders.setdefault(user_id, []).append(reminder_data)
+    save_reminders()
+    return reminder_id
+
+
+def format_reminder(reminder: dict) -> str:
+    reminder_time = datetime.fromisoformat(reminder["time"])
+    return (
+        f"ID: {reminder['id']}\n"
+        f"Cuando: {reminder_time.strftime('%Y-%m-%d %H:%M')}\n"
+        f"Recordatorio: {reminder['text']}\n"
+        f"Notificar: {reminder['notify_before']} minutos antes"
+    )
 
 
 def save_user_preferences():
@@ -203,7 +356,10 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     current_model = get_user_model(user.id) if provider == "gemini" else "gemini-2.5-flash"
     model = get_model_instance(current_model)
     chat_sessions[user.id] = model.start_chat(history=[])
-    await update.message.reply_text("✨ He olvidado todo lo que hablamos. ¡Empecemos de nuevo!")
+    # También limpiar el historial de Groq
+    if user.id in groq_chat_history:
+        groq_chat_history[user.id] = []
+    await update.message.reply_text("✨ He olvidado todo lo que hablamos (incluyendo Groq). ¡Empecemos de nuevo!")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Comando /help - Información sobre el bot"""
@@ -213,10 +369,71 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• **Contexto**: Recuerdo mensajes anteriores para dar mejores respuestas.\n"
         "• **Privacidad**: Usa `/clear` si quieres que borre el contexto de la charla actual.\n"
         "• **Proveedores**: Usa `/provider` para cambiar entre Gemini y Groq.\n"
-        "• **Modelos**: Usa `/model` para elegir un modelo del proveedor activo.\n\n"
+        "• **Modelos**: Usa `/model` para elegir un modelo del proveedor activo.\n"
+        "• **Recordatorios**: Usa `/recordatorio` para crear un recordatorio.\n"
+        "  Ejemplo: `/recordatorio 2026-04-07 19:00 | Pagar facturas | 10`\n"
+        "• **Mis recordatorios**: Usa `/misrecordatorios` para ver tus recordatorios.\n"
+        "• **Borrar recordatorio**: Usa `/borrarrecordatorio <id>`.\n"
+        "• **Calendario**: Usa `/eventos` para ver tus próximos eventos de Google Calendar.\n"
+        "• **Agendar**: Usa `/agendar YYYY-MM-DD HH:MM | Título | minutos_duración | descripción`.\n\n"
         "Voz e imagen usan Gemini porque el procesamiento de audio/imagen es más completo allí.",
         parse_mode="Markdown"
     )
+
+async def eventos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando /eventos - Mostrar próximos eventos de Google Calendar."""
+    try:
+        events = get_calendar_events(days=7, max_results=10)
+        if not events:
+            await update.message.reply_text("No encontré eventos próximos en tu calendario.")
+            return
+
+        lines = []
+        for event in events:
+            start = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+            summary = event.get("summary", "Sin título")
+            lines.append(f"• {start}: {summary}")
+
+        await update.message.reply_text("📅 *Próximos eventos:*\n" + "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error al obtener eventos de calendario: {e}")
+        await update.message.reply_text("No pude conectar con Google Calendar. Revisa la configuración.")
+
+async def agendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando /agendar - Crear un evento en Google Calendar."""
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: /agendar YYYY-MM-DD HH:MM | Título | minutos_duración | descripción\n"
+            "Ejemplo: /agendar 2026-04-07 19:00 | Reunión con equipo | 60 | Revisar objetivos"
+        )
+        return
+
+    parts = " ".join(context.args).split("|")
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "Por favor usa el formato: `YYYY-MM-DD HH:MM | Título | minutos_duración | descripción`",
+            parse_mode=None
+        )
+        return
+
+    time_part = parts[0].strip()
+    title = parts[1].strip()
+    duration = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else 60
+    description = parts[3].strip() if len(parts) > 3 else ""
+    start_time = parse_datetime(time_part)
+
+    if not start_time:
+        await update.message.reply_text("No pude leer la fecha/hora. Usa `YYYY-MM-DD HH:MM`.")
+        return
+
+    try:
+        event = create_calendar_event(title, start_time, duration_minutes=duration, description=description)
+        await update.message.reply_text(
+            f"✅ Evento creado: {event.get('htmlLink', 'Enlace no disponible')}"
+        )
+    except Exception as e:
+        logger.error(f"Error creando evento de calendario: {e}")
+        await update.message.reply_text("No pude crear el evento. Revisa la configuración de Google Calendar.")
 
 async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Comando /provider - Cambiar proveedor de IA"""
@@ -303,10 +520,16 @@ async def process_groq_request(update: Update, prompt: str) -> str:
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY no configurada")
 
-    model_name = get_user_model(update.effective_user.id)
+    user_id = update.effective_user.id
+    model_name = get_user_model(user_id)
     groq_model = model_name if model_name in AVAILABLE_MODELS["groq"] else list(AVAILABLE_MODELS["groq"].keys())[0]
     
-    # Groq usa endpoint compatible con OpenAI
+    # Obtener historial de Groq (limitado a últimos 10 mensajes)
+    history = groq_chat_history.setdefault(user_id, [])
+    history.append({"role": "user", "content": prompt})
+    if len(history) > 10:
+        history.pop(0)
+
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -314,27 +537,25 @@ async def process_groq_request(update: Update, prompt: str) -> str:
     }
     payload = {
         "model": groq_model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": history,
         "max_tokens": 500,
         "temperature": 0.7
     }
     try:
-        response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+    except Exception as e:
         logger.error(f"Error de conexión con Groq: {e}", exc_info=True)
-        if isinstance(e, requests.exceptions.ConnectionError):
-            raise RuntimeError(
-                "No se pudo conectar con Groq. Verifica tu conexión a internet o el valor de GROQ_API_KEY."
-            ) from e
-        raise
+        raise RuntimeError(f"Error al conectar con Groq: {str(e)}")
 
-    data = response.json()
-    # Formato OpenAI: choices[0].message.content
     if "choices" in data and len(data["choices"]) > 0:
-        content = data["choices"][0].get("message", {}).get("content", "")
-        if content:
-            return content
+        assistant_content = data["choices"][0].get("message", {}).get("content", "")
+        if assistant_content:
+            # Añadir respuesta del asistente al historial
+            history.append({"role": "assistant", "content": assistant_content})
+            return assistant_content
     return ""
 
 async def process_gemini_request(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: any) -> None:
@@ -406,6 +627,111 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await process_user_request(update, context, user_message)
 
+
+async def recordatorio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando /recordatorio - Crear un nuevo recordatorio."""
+    user = update.effective_user
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "Uso: /recordatorio YYYY-MM-DD HH:MM | Texto del recordatorio | minutos_antes\n"
+            "Ejemplo: /recordatorio 2026-04-07 19:00 | Pagar facturas | 10"
+        )
+        return
+
+    parts = " ".join(args).split("|")
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "Por favor usa el formato: `YYYY-MM-DD HH:MM | Texto del recordatorio | minutos_antes`",
+            parse_mode=None
+        )
+        return
+
+    time_part = parts[0].strip()
+    text = parts[1].strip()
+    notify_before = parse_notify_before(parts[2].strip()) if len(parts) > 2 else 10
+    target_time = parse_datetime(time_part)
+
+    if not target_time:
+        await update.message.reply_text("No pude leer la fecha/hora. Usa `YYYY-MM-DD HH:MM`.")
+        return
+
+    # Localizar el tiempo objetivo a la zona horaria del bot
+    target_time = tz.localize(target_time)
+    now_tz = datetime.now(tz)
+
+    if target_time < now_tz:
+        await update.message.reply_text("La fecha ya pasó. Elige un momento futuro.")
+        return
+
+    reminder_id = add_reminder(user.id, text, target_time, notify_before)
+    await update.message.reply_text(
+        f"✅ Recordatorio creado:\nID: {reminder_id}\n" +
+        f"Cuando: {target_time.strftime('%Y-%m-%d %H:%M')}\n" +
+        f"Te avisaré {notify_before} minutos antes."
+    )
+
+
+async def misrecordatorios_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando /misrecordatorios - Mostrar recordatorios activos."""
+    user = update.effective_user
+    user_reminders = reminders.get(user.id, [])
+
+    if not user_reminders:
+        await update.message.reply_text("No tienes recordatorios activos.")
+        return
+
+    lines = [format_reminder(rem) for rem in user_reminders]
+    await update.message.reply_text("\n\n".join(lines))
+
+
+async def borrarrecordatorio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando /borrarrecordatorio - Eliminar un recordatorio."""
+    user = update.effective_user
+    if not context.args:
+        await update.message.reply_text("Uso: /borrarrecordatorio <id>")
+        return
+
+    reminder_id = context.args[0].strip()
+    user_reminders = reminders.get(user.id, [])
+    remaining = [rem for rem in user_reminders if rem["id"] != reminder_id]
+    if len(remaining) == len(user_reminders):
+        await update.message.reply_text("No encontré ese ID de recordatorio.")
+        return
+
+    reminders[user.id] = remaining
+    save_reminders()
+    await update.message.reply_text("✅ Recordatorio eliminado.")
+
+
+async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    now_tz = datetime.now(tz)
+    for user_id, user_reminders in list(reminders.items()):
+        updated = False
+        for reminder in user_reminders:
+            if reminder.get("notified"):
+                continue
+            # Parsear y localizar el tiempo del recordatorio
+            reminder_time = tz.localize(datetime.fromisoformat(reminder["time"]))
+            notify_before = int(reminder.get("notify_before", 0))
+            notify_at = reminder_time - timedelta(minutes=notify_before)
+            
+            if notify_at <= now_tz:
+                chat_id = user_id
+                message = (
+                    f"⏰ *Recordatorio*: {reminder['text']}\n"
+                    f"Hora: {reminder_time.strftime('%Y-%m-%d %H:%M')}"
+                )
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                    reminder["notified"] = True
+                    updated = True
+                except Exception as e:
+                    logger.error(f"Error al enviar recordatorio: {e}")
+        if updated:
+            save_reminders()
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manejar fotos enviadas por el usuario"""
     user = update.effective_user
@@ -465,6 +791,7 @@ def main() -> None:
     """Punto de entrada principal para el bot"""
     # Cargar preferencias al iniciar
     load_user_preferences()
+    load_reminders()
     
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     
@@ -481,6 +808,11 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("provider", provider_command))
     app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("recordatorio", recordatorio_command))
+    app.add_handler(CommandHandler("misrecordatorios", misrecordatorios_command))
+    app.add_handler(CommandHandler("borrarrecordatorio", borrarrecordatorio_command))
+    app.add_handler(CommandHandler("eventos", eventos_command))
+    app.add_handler(CommandHandler("agendar", agendar_command))
     
     # Manejador de callbacks para cambio de proveedor/modelo
     app.add_handler(CallbackQueryHandler(button_callback))
@@ -491,6 +823,28 @@ def main() -> None:
     # Manejadores para fotos y notas de voz
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+    # Scheduler de recordatorios
+    app.job_queue.run_repeating(check_reminders, interval=60, first=10)
+
+    # --- SERVIDOR DE SALUD PARA RENDER ---
+    def run_health_check():
+        class HealthCheckHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Bot is alive!")
+            def log_message(self, format, *args):
+                pass # Evitar logs ruidosos en Render
+
+        port = int(os.environ.get("PORT", "8000"))
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logger.info(f"Iniciando servidor de salud en puerto {port}...")
+        server.serve_forever()
+
+    health_thread = threading.Thread(target=run_health_check, daemon=True)
+    health_thread.start()
+    # -------------------------------------
 
     # Iniciar el bot (polling)
     logger.info("El bot está en línea y escuchando mensajes...")
