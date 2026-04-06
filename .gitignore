@@ -38,5 +38,9 @@ wheels/
 .DS_Store
 Thumbs.db
 
-# Preferencias de usuario
+# Preferencias de usuario y datos
 user_preferences.json
+reminders.json
+
+# Scripts de prueba temporales
+test_dates.py

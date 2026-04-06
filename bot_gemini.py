@@ -707,28 +707,44 @@ async def borrarrecordatorio_command(update: Update, context: ContextTypes.DEFAU
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     now_tz = datetime.now(tz)
+    # logger.debug(f"Verificando recordatorios en {now_tz}") # Comentar si es muy ruidoso
+    
     for user_id, user_reminders in list(reminders.items()):
         updated = False
         for reminder in user_reminders:
             if reminder.get("notified"):
                 continue
-            # Parsear y localizar el tiempo del recordatorio
-            reminder_time = tz.localize(datetime.fromisoformat(reminder["time"]))
-            notify_before = int(reminder.get("notify_before", 0))
-            notify_at = reminder_time - timedelta(minutes=notify_before)
             
-            if notify_at <= now_tz:
-                chat_id = user_id
-                message = (
-                    f"⏰ *Recordatorio*: {reminder['text']}\n"
-                    f"Hora: {reminder_time.strftime('%Y-%m-%d %H:%M')}"
-                )
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
-                    reminder["notified"] = True
-                    updated = True
-                except Exception as e:
-                    logger.error(f"Error al enviar recordatorio: {e}")
+            try:
+                # Parsear el tiempo guardado
+                dt_raw = datetime.fromisoformat(reminder["time"])
+                
+                # Si no tiene zona horaria (naive), la localizamos. 
+                # Si ya tiene (aware), la usamos directamente.
+                if dt_raw.tzinfo is None:
+                    reminder_time = tz.localize(dt_raw)
+                else:
+                    reminder_time = dt_raw
+                    
+                notify_before = int(reminder.get("notify_before", 0))
+                notify_at = reminder_time - timedelta(minutes=notify_before)
+                
+                if notify_at <= now_tz:
+                    chat_id = user_id
+                    message = (
+                        f"⏰ *Recordatorio*: {reminder['text']}\n"
+                        f"Hora: {reminder_time.strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                        reminder["notified"] = True
+                        updated = True
+                        logger.info(f"Recordatorio enviado a {user_id}: {reminder['text']}")
+                    except Exception as e:
+                        logger.error(f"Error al enviar mensaje de recordatorio a {user_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error procesando recordatorio individual para {user_id}: {e}")
+                
         if updated:
             save_reminders()
 
@@ -832,12 +848,15 @@ def main() -> None:
         class HealthCheckHandler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
+                self.send_header("Content-type", "text/plain")
                 self.end_headers()
                 self.wfile.write(b"Bot is alive!")
-            def log_message(self, format, *args):
-                pass # Evitar logs ruidosos en Render
+                logger.info(f"Ping de salud recibido desde {self.client_address[0]}")
 
-        port = int(os.environ.get("PORT", "8000"))
+            def log_message(self, format, *args):
+                pass
+
+        port = int(os.environ.get("PORT", "10000"))
         server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
         logger.info(f"Iniciando servidor de salud en puerto {port}...")
         server.serve_forever()
@@ -849,11 +868,9 @@ def main() -> None:
     # Iniciar el bot (polling)
     logger.info("El bot está en línea y escuchando mensajes...")
     
-    # Python 3.14+ en algunos entornos no tiene un loop activo todavía.
-    # Creamos uno explícito para evitar el error de "no current event loop".
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # app.run_polling() es bloqueante y maneja su propio bucle de eventos.
+    # En Render, esto es lo más estable.
+    app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
 
 if __name__ == "__main__":
     main()
