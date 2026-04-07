@@ -156,6 +156,7 @@ def load_notified_events():
         try:
             raw = json.loads(NOTIFIED_EVENTS_FILE.read_text())
             notified_events = {int(uid): ids for uid, ids in raw.items()}
+            logger.info(f"Eventos notificados cargados para {len(notified_events)} usuarios")
         except Exception as e:
             logger.warning(f"Error cargando eventos notificados: {e}")
 
@@ -269,7 +270,11 @@ def tool_create_calendar_event(summary: str, start_time_str: str, duration_minut
             return f"Error: Formato de fecha inválido '{start_time_str}'. Usa YYYY-MM-DD HH:MM."
         
         # Localizar el tiempo
-        dt = tz.localize(dt)
+        if dt.tzinfo is None:
+            dt = tz.localize(dt)
+        else:
+            dt = dt.astimezone(tz)
+            
         event = create_calendar_event(summary, dt, duration_minutes, description)
         return f"Evento creado exitosamente: {event.get('htmlLink')}"
     except Exception as e:
@@ -762,14 +767,20 @@ async def process_gemini_request(update: Update, context: ContextTypes.DEFAULT_T
                     if name == "set_notification_preference":
                         args["user_id"] = user.id
                         
-                    function_to_call = AVAILABLE_TOOLS.get(name)
-                    if function_to_call:
-                        # Filtrar argumentos basados en la firma
-                        sig = inspect.signature(function_to_call)
-                        filtered_args = {k: v for k, v in args.items() if k in sig.parameters}
-                        result = function_to_call(**filtered_args)
+                    try:
+                        function_to_call = AVAILABLE_TOOLS.get(name)
+                        if function_to_call:
+                            # Filtrar argumentos basados en la firma
+                            sig = inspect.signature(function_to_call)
+                            filtered_args = {k: v for k, v in args.items() if k in sig.parameters}
+                            result = function_to_call(**filtered_args)
+                        else:
+                            result = f"Error: Tool '{name}' no encontrada."
+                    except Exception as tool_e:
+                        logger.error(f"Error ejecutando tool {name}: {tool_e}")
+                        result = f"Error interno al ejecutar la herramienta: {str(tool_e)}"
                         
-                        tool_results.append(genai.protos.Part(
+                    tool_results.append(genai.protos.Part(
                             function_response=genai.protos.FunctionResponse(
                                 name=name,
                                 response={"result": str(result)}
@@ -972,9 +983,21 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                 
             # Parsear fecha del evento
             try:
-                # Google suele devolver ISO strings con TZ
-                event_time = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-            except Exception:
+                # Google suele devolver ISO strings con TZ (dateTime) o sin ella (date para todo el día)
+                if 'T' in start_raw:
+                    # Formato con hora: "2026-04-10T15:00:00Z" o similar
+                    event_time = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                else:
+                    # Formato todo el día: "2026-04-10"
+                    event_time = datetime.strptime(start_raw, "%Y-%m-%d")
+                
+                # Normalizar zona horaria para comparación
+                if event_time.tzinfo is None:
+                    event_time = tz.localize(event_time)
+                else:
+                    event_time = event_time.astimezone(tz)
+            except Exception as e:
+                logger.error(f"Error parseando fecha de evento {summary}: {e}")
                 continue
             
             # Para cada usuario, ver si necesita notificación
