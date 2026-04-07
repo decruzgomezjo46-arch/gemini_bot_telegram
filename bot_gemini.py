@@ -29,6 +29,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+import inspect
 
 # Cargar variables de entorno
 load_dotenv()
@@ -88,6 +89,7 @@ AVAILABLE_MODELS = {
 # Archivos de configuración
 USER_PREFS_FILE = Path("user_preferences.json")
 REMINDERS_FILE = Path("reminders.json")
+NOTIFIED_EVENTS_FILE = Path("notified_events.json")
 
 # Configuración Google Calendar
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -102,6 +104,7 @@ chat_sessions: dict[int, any] = {}
 reminders: dict[int, list[dict]] = {}
 groq_chat_history: dict[int, list[dict]] = {}
 calendar_service = None
+notified_events: dict[int, list[str]] = {}
 
 # Configuración de Zona Horaria (puedes cambiarla en el .env)
 DEFAULT_TIMEZONE = os.getenv("TIMEZONE", "America/Mexico_City")
@@ -145,6 +148,24 @@ def load_reminders():
         except Exception as e:
             reminders = {}
             logger.warning(f"Error cargando recordatorios: {e}")
+
+def load_notified_events():
+    """Cargar IDs de eventos ya notificados"""
+    global notified_events
+    if NOTIFIED_EVENTS_FILE.exists():
+        try:
+            raw = json.loads(NOTIFIED_EVENTS_FILE.read_text())
+            notified_events = {int(uid): ids for uid, ids in raw.items()}
+        except Exception as e:
+            logger.warning(f"Error cargando eventos notificados: {e}")
+
+def save_notified_events():
+    """Guardar IDs de eventos ya notificados"""
+    try:
+        data = {str(uid): ids for uid, ids in notified_events.items()}
+        NOTIFIED_EVENTS_FILE.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        logger.error(f"Error guardando eventos notificados: {e}")
 
 
 def save_reminders():
@@ -213,6 +234,117 @@ def create_calendar_event(summary: str, start_time: datetime, duration_minutes: 
     }
     event = service.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event_body).execute()
     return event
+
+# --- FUNCIONES PARA TOOLS (IA) ---
+
+def get_current_time() -> str:
+    """Retorna la fecha y hora actual en la zona horaria configurada.
+    Útil para entender referencias relativas como 'mañana' o 'el lunes'."""
+    now = datetime.now(tz)
+    return now.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+def tool_list_calendar_events(days: int = 7) -> str:
+    """Lista los próximos eventos del calendario para los próximos 'days' días."""
+    try:
+        events = get_calendar_events(days=days)
+        if not events:
+            return "No hay eventos programados en los próximos días."
+        
+        lines = []
+        for event in events:
+            start = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+            summary = event.get("summary", "Sin título")
+            lines.append(f"- {start}: {summary}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error al obtener eventos: {str(e)}"
+
+def tool_create_calendar_event(summary: str, start_time_str: str, duration_minutes: int = 60, description: str = "") -> str:
+    """Crea un nuevo evento en el calendario de Google. 
+    start_time_str debe estar en formato YYYY-MM-DD HH:MM.
+    Ejemplo: tool_create_calendar_event('Reunión', '2026-04-10 15:00', 60, 'Sobre el proyecto')"""
+    try:
+        dt = parse_datetime(start_time_str)
+        if not dt:
+            return f"Error: Formato de fecha inválido '{start_time_str}'. Usa YYYY-MM-DD HH:MM."
+        
+        # Localizar el tiempo
+        dt = tz.localize(dt)
+        event = create_calendar_event(summary, dt, duration_minutes, description)
+        return f"Evento creado exitosamente: {event.get('htmlLink')}"
+    except Exception as e:
+        return f"Error al crear el evento: {str(e)}"
+
+def tool_set_notification_preference(user_id: int, minutes: int) -> str:
+    """Configura con cuántos minutos de anticipación el usuario quiere ser notificado de eventos."""
+    settings = user_settings.setdefault(user_id, {})
+    settings["notification_minutes_before"] = minutes
+    save_user_preferences()
+    return f"Preferencia de notificación actualizada: te avisaré {minutes} minutos antes de tus eventos."
+
+# Mapeo de funciones para ejecución dinámica
+AVAILABLE_TOOLS = {
+    "get_current_time": get_current_time,
+    "list_calendar_events": tool_list_calendar_events,
+    "create_calendar_event": tool_create_calendar_event,
+    "set_notification_preference": tool_set_notification_preference
+}
+
+# Definición para Groq (OpenAI format)
+GROQ_TOOLS_DEFINITION = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Retorna la fecha y hora actual para entender referencias temporales.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_calendar_events",
+            "description": "Lista los próximos eventos del calendario.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "Días a futuro a consultar.", "default": 7}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_calendar_event",
+            "description": "Crea un evento en el calendario de Google.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "Título del evento."},
+                    "start_time_str": {"type": "string", "description": "Fecha y hora en formato YYYY-MM-DD HH:MM."},
+                    "duration_minutes": {"type": "integer", "description": "Duración en minutos.", "default": 60},
+                    "description": {"type": "string", "description": "Descripción opcional."}
+                },
+                "required": ["summary", "start_time_str"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_notification_preference",
+            "description": "Configura cuántos minutos antes avisar de un evento.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "minutes": {"type": "integer", "description": "Minutos de anticipación."}
+                },
+                "required": ["minutes"]
+            }
+        }
+    }
+]
 
 
 def parse_datetime(value: str) -> datetime | None:
@@ -305,7 +437,8 @@ def get_model_instance(model_name: str):
         logger.info(f"Creando instancia para {model_name}")
         model_instances[model_name] = genai.GenerativeModel(
             model_name=model_name,
-            system_instruction=SYSTEM_PROMPT
+            system_instruction=SYSTEM_PROMPT,
+            tools=[get_current_time, tool_list_calendar_events, tool_create_calendar_event, tool_set_notification_preference]
         )
     return model_instances[model_name]
 
@@ -539,13 +672,56 @@ async def process_groq_request(update: Update, prompt: str) -> str:
         "model": groq_model,
         "messages": history,
         "max_tokens": 500,
-        "temperature": 0.7
+        "temperature": 0.7,
+        "tools": GROQ_TOOLS_DEFINITION,
+        "tool_choice": "auto"
     }
+    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=payload, timeout=30.0)
             response.raise_for_status()
             data = response.json()
+            
+            # Bucle para manejar llamadas a herramientas (máximo 5 iteraciones)
+            for _ in range(5):
+                if not data.get("choices") or data["choices"][0]["finish_reason"] != "tool_calls":
+                    break
+                
+                message = data["choices"][0]["message"]
+                tool_calls = message.get("tool_calls", [])
+                history.append(message) # Añadir mensaje con tool_calls al historial
+                
+                for tool_call in tool_calls:
+                    function_name = tool_call["function"]["name"]
+                    function_args = json.loads(tool_call["function"]["arguments"])
+                    
+                    logger.info(f"Groq calling tool: {function_name} with {function_args}")
+                    
+                    # Inyectar user_id si la función lo requiere
+                    if function_name == "set_notification_preference":
+                        function_args["user_id"] = user_id
+                        
+                    function_to_call = AVAILABLE_TOOLS.get(function_name)
+                    if function_to_call:
+                        # Obtener argumentos aceptados por la función
+                        sig = inspect.signature(function_to_call)
+                        # Filtrar argumentos que no existan en la firma
+                        filtered_args = {k: v for k, v in function_args.items() if k in sig.parameters}
+                        
+                        tool_result = function_to_call(**filtered_args)
+                        
+                        history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": function_name,
+                            "content": str(tool_result)
+                        })
+                
+                # Enviar los resultados de vuelta a Groq
+                response = await client.post(url, headers=headers, json={"model": groq_model, "messages": history}, timeout=30.0)
+                response.raise_for_status()
+                data = response.json()
     except Exception as e:
         logger.error(f"Error de conexión con Groq: {e}", exc_info=True)
         raise RuntimeError(f"Error al conectar con Groq: {str(e)}")
@@ -568,6 +744,40 @@ async def process_gemini_request(update: Update, context: ContextTypes.DEFAULT_T
         chat = get_chat_session(user.id)
         response = chat.send_message(prompt)
         increment_usage(user.id, current_model)
+
+        # Manejar llamadas a herramientas (Gemini lo hace de forma automática si se configura el chat)
+        # Pero aquí estamos usando chat.send_message, que devuelve la respuesta.
+        # Si hay tool_calls, Gemini requiere que las ejecutemos y enviemos el resultado.
+        
+        while response.candidates and any(part.function_call for part in response.candidates[0].content.parts):
+            tool_results = []
+            for part in response.candidates[0].content.parts:
+                if part.function_call:
+                    name = part.function_call.name
+                    args = dict(part.function_call.args)
+                    
+                    logger.info(f"Gemini calling tool: {name} with {args}")
+                    
+                    # Inyectar user_id si es necesario
+                    if name == "set_notification_preference":
+                        args["user_id"] = user.id
+                        
+                    function_to_call = AVAILABLE_TOOLS.get(name)
+                    if function_to_call:
+                        # Filtrar argumentos basados en la firma
+                        sig = inspect.signature(function_to_call)
+                        filtered_args = {k: v for k, v in args.items() if k in sig.parameters}
+                        result = function_to_call(**filtered_args)
+                        
+                        tool_results.append(genai.protos.Part(
+                            function_response=genai.protos.FunctionResponse(
+                                name=name,
+                                response={"result": str(result)}
+                            )
+                        ))
+            
+            # Enviar resultados de vuelta al modelo
+            response = chat.send_message(tool_results)
 
         if response.candidates and response.candidates[0].content.parts:
             assistant_text = response.text
@@ -748,6 +958,50 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         if updated:
             save_reminders()
 
+    # --- NUEVO: Verificar eventos de Google Calendar ---
+    try:
+        # Obtener eventos de los próximos 7 días
+        events = get_calendar_events(days=7)
+        for event in events:
+            event_id = event.get("id")
+            summary = event.get("summary", "Sin título")
+            start_raw = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+            
+            if not start_raw:
+                continue
+                
+            # Parsear fecha del evento
+            try:
+                # Google suele devolver ISO strings con TZ
+                event_time = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            
+            # Para cada usuario, ver si necesita notificación
+            for user_id in list(user_settings.keys()):
+                # Obtener su preferencia de tiempo (por defecto 10 min)
+                notify_before = user_settings[user_id].get("notification_minutes_before", 10)
+                notify_at = event_time - timedelta(minutes=notify_before)
+                
+                # Si ya es hora de notificar y no lo hemos hecho aún
+                if notify_at <= now_tz <= (event_time + timedelta(minutes=5)):
+                    user_notified = notified_events.setdefault(user_id, [])
+                    if event_id not in user_notified:
+                        message = (
+                            f"📅 *Próximo evento*: {summary}\n"
+                            f"Hora: {event_time.strftime('%Y-%m-%d %H:%M')}\n"
+                            f"Faltan {notify_before} minutos."
+                        )
+                        try:
+                            await context.bot.send_message(chat_id=user_id, text=message, parse_mode="Markdown")
+                            user_notified.append(event_id)
+                            save_notified_events()
+                            logger.info(f"Notificación de calendario enviada a {user_id}: {summary}")
+                        except Exception as e:
+                            logger.error(f"Error enviando notificación de calendario a {user_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error en check_reminders para Google Calendar: {e}")
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manejar fotos enviadas por el usuario"""
     user = update.effective_user
@@ -808,6 +1062,7 @@ def main() -> None:
     # Cargar preferencias al iniciar
     load_user_preferences()
     load_reminders()
+    load_notified_events()
     
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     
