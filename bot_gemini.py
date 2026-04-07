@@ -47,7 +47,13 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 SYSTEM_PROMPT = """Eres un asistente útil y amigable para Telegram. 
 Responde siempre en el mismo idioma que el usuario. 
 Sé conciso pero completo en tus respuestas. 
-Usa formato Markdown si es necesario para resaltar información."""
+Usa formato Markdown si es necesario para resaltar información.
+
+Capacidades de agenda:
+1. **Recordatorios internos**: Notificaciones rápidas de Telegram. No requieren Google Calendar. 
+   Usa 'add_internal_reminder' para esto.
+2. **Eventos de Google Calendar**: Eventos formales en el calendario. Requieren configuración.
+   Usa 'create_calendar_event' para esto."""
 
 # Proveedores y modelos disponibles
 AVAILABLE_PROVIDERS = {
@@ -204,7 +210,9 @@ def get_calendar_service():
     if calendar_service is None:
         creds = load_calendar_credentials()
         if not creds:
-            raise RuntimeError("Google Calendar no está configurado. Define GOOGLE_SERVICE_ACCOUNT_JSON o GOOGLE_SERVICE_ACCOUNT_FILE.")
+            # En lugar de lanzar RuntimeError, retornamos None para que las herramientas
+            # puedan explicar el error al usuario de forma amigable.
+            return None
         calendar_service = build("calendar", "v3", credentials=creds, cache_discovery=False)
     return calendar_service
 
@@ -247,7 +255,23 @@ def get_current_time() -> str:
 def tool_list_calendar_events(days: int = 7) -> str:
     """Lista los próximos eventos del calendario para los próximos 'days' días."""
     try:
-        events = get_calendar_events(days=days)
+        service = get_calendar_service()
+        if not service:
+            return "❌ Error: Google Calendar no está configurado en el bot. Pide al administrador que configure GOOGLE_SERVICE_ACCOUNT_JSON."
+        
+        # Usar service directamente en lugar de get_calendar_events para manejar el error aquí
+        now = datetime.utcnow().isoformat() + "Z"
+        later = (datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
+        events_result = service.events().list(
+            calendarId=GOOGLE_CALENDAR_ID,
+            timeMin=now,
+            timeMax=later,
+            maxResults=10,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+        events = events_result.get("items", [])
+
         if not events:
             return "No hay eventos programados en los próximos días."
         
@@ -265,6 +289,10 @@ def tool_create_calendar_event(summary: str, start_time_str: str, duration_minut
     start_time_str debe estar en formato YYYY-MM-DD HH:MM.
     Ejemplo: tool_create_calendar_event('Reunión', '2026-04-10 15:00', 60, 'Sobre el proyecto')"""
     try:
+        service = get_calendar_service()
+        if not service:
+            return "❌ Error: Google Calendar no está configurado en el bot. Pide al administrador que configure GOOGLE_SERVICE_ACCOUNT_JSON."
+
         dt = parse_datetime(start_time_str)
         if not dt:
             return f"Error: Formato de fecha inválido '{start_time_str}'. Usa YYYY-MM-DD HH:MM."
@@ -276,8 +304,15 @@ def tool_create_calendar_event(summary: str, start_time_str: str, duration_minut
             # Si ya es aware, convertirlo a la zona horaria objetivo
             dt = dt.astimezone(tz)
             
-        event = create_calendar_event(summary, dt, duration_minutes, description)
-        return f"Evento creado exitosamente: {event.get('htmlLink')}"
+        end_time = dt + timedelta(minutes=duration_minutes)
+        event_body = {
+            "summary": summary,
+            "description": description,
+            "start": {"dateTime": dt.isoformat(), "timeZone": DEFAULT_TIMEZONE},
+            "end": {"dateTime": end_time.isoformat(), "timeZone": DEFAULT_TIMEZONE}
+        }
+        event = service.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event_body).execute()
+        return f"✅ Evento de Google Calendar creado: {event.get('htmlLink')}"
     except Exception as e:
         return f"Error al crear el evento: {str(e)}"
 
@@ -288,12 +323,36 @@ def tool_set_notification_preference(user_id: int, minutes: int) -> str:
     save_user_preferences()
     return f"Preferencia de notificación actualizada: te avisaré {minutes} minutos antes de tus eventos."
 
+def tool_add_internal_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10) -> str:
+    """Crea un recordatorio interno (notificación de Telegram). No usa Google Calendar.
+    target_time_str debe estar en formato YYYY-MM-DD HH:MM.
+    Ejemplo: tool_add_internal_reminder(12345, 'Sacar la basura', '2026-04-07 20:00', 5)"""
+    try:
+        dt = parse_datetime(target_time_str)
+        if not dt:
+            return f"Error: Formato de fecha inválido '{target_time_str}'. Usa YYYY-MM-DD HH:MM."
+        
+        if dt.tzinfo is None:
+            dt = tz.localize(dt)
+        else:
+            dt = dt.astimezone(tz)
+
+        now_tz = datetime.now(tz)
+        if dt < now_tz:
+            return "Error: La fecha ya pasó. Elige un momento futuro."
+
+        reminder_id = add_reminder(user_id, text, dt, notify_before)
+        return f"✅ Recordatorio interno creado exitosamente.\nID: {reminder_id}\nCuando: {dt.strftime('%Y-%m-%d %H:%M')}\nTe avisaré {notify_before} minutos antes."
+    except Exception as e:
+        return f"Error al crear recordatorio interno: {str(e)}"
+
 # Mapeo de funciones para ejecución dinámica
 AVAILABLE_TOOLS = {
     "get_current_time": get_current_time,
     "list_calendar_events": tool_list_calendar_events,
     "create_calendar_event": tool_create_calendar_event,
-    "set_notification_preference": tool_set_notification_preference
+    "set_notification_preference": tool_set_notification_preference,
+    "add_internal_reminder": tool_add_internal_reminder
 }
 
 # Definición para Groq (OpenAI format)
@@ -347,6 +406,22 @@ GROQ_TOOLS_DEFINITION = [
                     "minutes": {"type": "integer", "description": "Minutos de anticipación."}
                 },
                 "required": ["minutes"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_internal_reminder",
+            "description": "Crea un recordatorio interno (notificación de Telegram). No usa Google Calendar. Ideal para alertas personales rápidas.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Descripción del recordatorio."},
+                    "target_time_str": {"type": "string", "description": "Fecha y hora en formato YYYY-MM-DD HH:MM."},
+                    "notify_before": {"type": "integer", "description": "Minutos de anticipación para avisar.", "default": 10}
+                },
+                "required": ["text", "target_time_str"]
             }
         }
     }
@@ -444,7 +519,7 @@ def get_model_instance(model_name: str):
         model_instances[model_name] = genai.GenerativeModel(
             model_name=model_name,
             system_instruction=SYSTEM_PROMPT,
-            tools=[get_current_time, tool_list_calendar_events, tool_create_calendar_event, tool_set_notification_preference]
+            tools=[get_current_time, tool_list_calendar_events, tool_create_calendar_event, tool_set_notification_preference, tool_add_internal_reminder]
         )
     return model_instances[model_name]
 
@@ -705,7 +780,7 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                     logger.info(f"Groq calling tool: {function_name} with {function_args}")
                     
                     # Inyectar user_id si la función lo requiere
-                    if function_name == "set_notification_preference":
+                    if function_name in ["set_notification_preference", "add_internal_reminder"]:
                         function_args["user_id"] = user_id
                         
                     function_to_call = AVAILABLE_TOOLS.get(function_name)
@@ -765,7 +840,7 @@ async def process_gemini_request(update: Update, context: ContextTypes.DEFAULT_T
                     logger.info(f"Gemini calling tool: {name} with {args}")
                     
                     # Inyectar user_id si es necesario
-                    if name == "set_notification_preference":
+                    if name in ["set_notification_preference", "add_internal_reminder"]:
                         args["user_id"] = user.id
                         
                     try:
