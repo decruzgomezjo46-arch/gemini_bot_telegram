@@ -273,6 +273,7 @@ def tool_create_calendar_event(summary: str, start_time_str: str, duration_minut
         if dt.tzinfo is None:
             dt = tz.localize(dt)
         else:
+            # Si ya es aware, convertirlo a la zona horaria objetivo
             dt = dt.astimezone(tz)
             
         event = create_calendar_event(summary, dt, duration_minutes, description)
@@ -879,7 +880,10 @@ async def recordatorio_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # Localizar el tiempo objetivo a la zona horaria del bot
-    target_time = tz.localize(target_time)
+    if target_time.tzinfo is None:
+        target_time = tz.localize(target_time)
+    else:
+        target_time = target_time.astimezone(tz)
     now_tz = datetime.now(tz)
 
     if target_time < now_tz:
@@ -1151,4 +1155,17 @@ def main() -> None:
     app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
 
 if __name__ == "__main__":
-    main()
+    # Fix para Python 3.12+ y 3.14 (Render): Asegurar que haya un bucle de eventos activo
+    # antes de llamar a run_polling() que internamente lo requiere.
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    try:
+        main()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot apagado por el usuario.")
+    except Exception as e:
+        logger.critical(f"Error fatal inesperado: {e}", exc_info=True)
