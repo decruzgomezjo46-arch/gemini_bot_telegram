@@ -49,10 +49,14 @@ Responde siempre en el mismo idioma que el usuario.
 Sé conciso pero completo en tus respuestas. 
 Usa formato Markdown si es necesario para resaltar información.
 
+REGLA CRÍTICA PARA FECHAS:
+- Si el usuario usa términos relativos como "hoy", "mañana", "pasado mañana" o "este lunes", DEBES llamar a 'get_current_time' PRIMERO para conocer la fecha exacta.
+- Nunca preguntes la fecha al usuario si puedes obtenerla con 'get_current_time'.
+
 Capacidades de agenda:
 1. **Recordatorios internos**: Notificaciones rápidas de Telegram. No requieren Google Calendar. 
    Usa 'add_internal_reminder' para esto.
-2. **Eventos de Google Calendar**: Eventos formales en el calendario. Requieren configuración.
+2. **Eventos de Google Calendar**: Eventos formales en el calendario. Requieren configuración de Service Account.
    Usa 'create_calendar_event' para esto."""
 
 # Proveedores y modelos disponibles
@@ -219,21 +223,28 @@ def get_calendar_service():
 
 def get_calendar_events(days: int = 7, max_results: int = 10) -> list[dict]:
     service = get_calendar_service()
+    if not service:
+        return []
     now = datetime.utcnow().isoformat() + "Z"
     later = (datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
-    events_result = service.events().list(
-        calendarId=GOOGLE_CALENDAR_ID,
-        timeMin=now,
-        timeMax=later,
-        maxResults=max_results,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
-    return events_result.get("items", [])
+    try:
+        events_result = service.events().list(
+            calendarId=GOOGLE_CALENDAR_ID,
+            timeMin=now,
+            timeMax=later,
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+        return events_result.get("items", [])
+    except Exception as e:
+        logger.error(f"Error listando eventos: {e}")
+        return []
 
-
-def create_calendar_event(summary: str, start_time: datetime, duration_minutes: int = 60, description: str = "") -> dict:
+def create_calendar_event_internal(summary: str, start_time: datetime, duration_minutes: int = 60, description: str = "") -> dict:
     service = get_calendar_service()
+    if not service:
+        raise RuntimeError("Google Calendar no está configurado.")
     end_time = start_time + timedelta(minutes=duration_minutes)
     event_body = {
         "summary": summary,
@@ -315,6 +326,31 @@ def tool_create_calendar_event(summary: str, start_time_str: str, duration_minut
         return f"✅ Evento de Google Calendar creado: {event.get('htmlLink')}"
     except Exception as e:
         return f"Error al crear el evento: {str(e)}"
+
+async def debug_calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando de diagnóstico para el calendario."""
+    status = "❌ No configurado"
+    if GOOGLE_SERVICE_ACCOUNT_JSON:
+        status = "✅ JSON detectado (env)"
+    elif GOOGLE_SERVICE_ACCOUNT_FILE:
+        status = f"✅ Archivo detectado: {GOOGLE_SERVICE_ACCOUNT_FILE}"
+    
+    calendar_status = "❌ Error al conectar"
+    try:
+        service = get_calendar_service()
+        if service:
+            calendar_status = "✅ Conexión exitosa"
+    except Exception as e:
+        calendar_status = f"❌ Error: {str(e)}"
+        
+    msg = (
+        f"🔍 *Diagnóstico de Calendario*\n\n"
+        f"Credenciales: {status}\n"
+        f"ID Calendario: `{GOOGLE_CALENDAR_ID}`\n"
+        f"Estado Servicio: {calendar_status}\n\n"
+        f"Nota: El bot necesita el JSON **completo** de la Service Account en Render."
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 def tool_set_notification_preference(user_id: int, minutes: int) -> str:
     """Configura con cuántos minutos de anticipación el usuario quiere ser notificado de eventos."""
@@ -775,10 +811,14 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                 
                 for tool_call in tool_calls:
                     function_name = tool_call["function"]["name"]
-                    function_args = json.loads(tool_call["function"]["arguments"])
+                    function_args = json.loads(tool_call["function"]["arguments"]) if tool_call["function"]["arguments"] else {}
                     
                     logger.info(f"Groq calling tool: {function_name} with {function_args}")
                     
+                    # Asegurar que sea un dict
+                    if not isinstance(function_args, dict):
+                        function_args = {}
+
                     # Inyectar user_id si la función lo requiere
                     if function_name in ["set_notification_preference", "add_internal_reminder"]:
                         function_args["user_id"] = user_id
@@ -788,7 +828,7 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                         # Obtener argumentos aceptados por la función
                         sig = inspect.signature(function_to_call)
                         # Filtrar argumentos que no existan en la firma
-                        filtered_args = {k: v for k, v in function_args.items() if k in sig.parameters}
+                        filtered_args = {k: v for k, v in (function_args or {}).items() if k in sig.parameters}
                         
                         tool_result = function_to_call(**filtered_args)
                         
@@ -835,7 +875,7 @@ async def process_gemini_request(update: Update, context: ContextTypes.DEFAULT_T
             for part in response.candidates[0].content.parts:
                 if part.function_call:
                     name = part.function_call.name
-                    args = dict(part.function_call.args)
+                    args = dict(part.function_call.args) if part.function_call.args else {}
                     
                     logger.info(f"Gemini calling tool: {name} with {args}")
                     
@@ -848,7 +888,7 @@ async def process_gemini_request(update: Update, context: ContextTypes.DEFAULT_T
                         if function_to_call:
                             # Filtrar argumentos basados en la firma
                             sig = inspect.signature(function_to_call)
-                            filtered_args = {k: v for k, v in args.items() if k in sig.parameters}
+                            filtered_args = {k: v for k, v in (args or {}).items() if k in sig.parameters}
                             result = function_to_call(**filtered_args)
                         else:
                             result = f"Error: Tool '{name}' no encontrada."
@@ -1186,6 +1226,7 @@ def main() -> None:
     app.add_handler(CommandHandler("borrarrecordatorio", borrarrecordatorio_command))
     app.add_handler(CommandHandler("eventos", eventos_command))
     app.add_handler(CommandHandler("agendar", agendar_command))
+    app.add_handler(CommandHandler("debug_calendar", debug_calendar_command))
     
     # Manejador de callbacks para cambio de proveedor/modelo
     app.add_handler(CallbackQueryHandler(button_callback))
