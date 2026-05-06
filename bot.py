@@ -42,13 +42,25 @@ AVAILABLE_MODELS = {
         "name": "🟠 Llama 3.3 70B Versatile",
         "limit": "30 req/min",
         "speed": "Rápido",
-        "best_for": "Tareas complejas y uso de herramientas (RECOMENDADO)"
+        "best_for": "Tareas complejas (RECOMENDADO)"
     },
     "llama-3.1-8b-instant": {
         "name": "⚡ Llama 3.1 8B Instant",
         "limit": "30 req/min",
         "speed": "Muy rápido",
         "best_for": "Respuestas rápidas"
+    },
+    "mixtral-8x7b-32768": {
+        "name": "🌪️ Mixtral 8x7B",
+        "limit": "30 req/min",
+        "speed": "Rápido",
+        "best_for": "Buena alternativa a Llama"
+    },
+    "gemma2-9b-it": {
+        "name": "💎 Gemma 2 9B",
+        "limit": "30 req/min",
+        "speed": "Rápido",
+        "best_for": "Modelo ligero de Google"
     }
 }
 
