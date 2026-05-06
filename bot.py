@@ -123,7 +123,7 @@ def parse_notify_before(value: str) -> int:
 
 
 
-def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10, **kwargs) -> str:
+def tool_add_reminder(user_id: int, text: str, target_time_str: str, **kwargs) -> str:
     try:
         dt = parse_datetime(target_time_str)
         if not dt:
@@ -139,7 +139,7 @@ def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_befo
             return "Error: La fecha ya pasó. Elige un momento futuro."
 
         notion_time = dt.isoformat()
-        reminder_id = notion_service.add_reminder(user_id, text, notion_time, notify_before)
+        reminder_id = notion_service.add_reminder(user_id, text, notion_time, 0)
         
         return f"✅ Recordatorio creado en Notion. ID: {reminder_id}, Para: {dt.strftime('%Y-%m-%d %H:%M')}."
     except Exception as e:
@@ -195,8 +195,7 @@ GROQ_TOOLS_DEFINITION = [
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "Descripción de la tarea."},
-                    "target_time_str": {"type": "string", "description": "Fecha y hora en formato YYYY-MM-DD HH:MM."},
-                    "notify_before": {"type": "integer", "description": "Minutos de anticipación para avisar."}
+                    "target_time_str": {"type": "string", "description": "Fecha y hora en la que debe sonar el recordatorio (formato YYYY-MM-DD HH:MM)."}
                 },
                 "required": ["text", "target_time_str"]
             }
