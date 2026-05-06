@@ -357,7 +357,8 @@ async def process_groq_request(update: Update, prompt: str) -> str:
         "max_tokens": 800,
         "temperature": 0.7,
         "tools": GROQ_TOOLS_DEFINITION,
-        "tool_choice": "auto"
+        "tool_choice": "auto",
+        "parallel_tool_calls": False
     }
     
     try:
@@ -399,7 +400,8 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                             "content": str(tool_result)
                         })
                 
-                response = await client.post(url, headers=headers, json={"model": groq_model, "messages": history}, timeout=30.0)
+                payload["messages"] = history
+                response = await client.post(url, headers=headers, json=payload, timeout=30.0)
                 response.raise_for_status()
                 data = response.json()
     except httpx.HTTPStatusError as e:
