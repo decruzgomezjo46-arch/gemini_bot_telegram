@@ -36,7 +36,12 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = '''Eres un asistente personal de Telegram muy útil y conciso. 
 Tienes herramientas conectadas a Notion para gestionar recordatorios y consultar la hora actual. 
-Úsalas siempre que sea necesario para ayudar al usuario de forma automática, sin mostrar código ni explicar qué herramientas usas.'''
+Úsalas siempre que sea necesario para ayudar al usuario de forma automática, sin mostrar código ni explicar qué herramientas usas.
+IMPORTANTE SOBRE HERRAMIENTAS: 
+1. Si necesitas la hora actual, usa get_current_time PRIMERO.
+2. Espera la respuesta de get_current_time.
+3. LUEGO, usa add_reminder calculando la hora.
+NUNCA intentes anidar llamadas a herramientas (ej. no pongas get_current_time dentro de los argumentos de add_reminder). Hazlo siempre en pasos separados.'''
 
 AVAILABLE_MODELS = {
     "llama-3.3-70b-versatile": {
