@@ -124,8 +124,9 @@ def parse_notify_before(value: str) -> int:
 # --- TOOLS (IA) ---
 
 def get_current_time() -> str:
-    now = datetime.now(tz)
-    return now.strftime("%Y-%m-%d %H:%M:%S %Z")
+    """Devuelve la fecha y hora actual del sistema."""
+    current = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    return f"La fecha y hora actual es {current}. Si debes agendar un recordatorio, usa la herramienta 'add_reminder' AHORA MISMO calculando la hora objetivo basada en esta hora actual."
 
 def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10) -> str:
     try:
