@@ -34,10 +34,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = '''Eres un asistente personal de Telegram. 
-IMPORTANTE: NO escribas código Python ni expliques tus pasos.
-Si el usuario te pide crear un recordatorio, usa la herramienta 'get_current_time' internamente para obtener la fecha, y luego usa 'add_reminder' para agendarlo.
-Ejecuta las herramientas de manera silenciosa y luego confirma al usuario que lo has hecho.'''
+SYSTEM_PROMPT = '''Eres un asistente personal de Telegram muy útil y conciso. 
+Tienes herramientas conectadas a Notion para gestionar recordatorios y consultar la hora actual. 
+Úsalas siempre que sea necesario para ayudar al usuario de forma automática, sin mostrar código ni explicar qué herramientas usas.'''
 
 AVAILABLE_MODELS = {
     "llama-3.3-70b-versatile": {
@@ -126,7 +125,7 @@ def parse_notify_before(value: str) -> int:
 def get_current_time() -> str:
     """Devuelve la fecha y hora actual del sistema."""
     current = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-    return f"La fecha y hora actual es {current}. Si debes agendar un recordatorio, usa la herramienta 'add_reminder' AHORA MISMO calculando la hora objetivo basada en esta hora actual."
+    return current
 
 def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10) -> str:
     try:
