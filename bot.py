@@ -196,7 +196,10 @@ GROQ_TOOLS_DEFINITION = [
         "function": {
             "name": "get_current_time",
             "description": "Retorna la fecha y hora actual para entender referencias temporales relativas (ej. hoy, mañana).",
-            "parameters": {"type": "object", "properties": {}}
+            "parameters": {
+                "type": "object", 
+                "properties": {"dummy": {"type": "string", "description": "Ignorar"}}
+            }
         }
     },
     {
@@ -220,7 +223,10 @@ GROQ_TOOLS_DEFINITION = [
         "function": {
             "name": "list_reminders",
             "description": "Lista los recordatorios activos del usuario guardados en Notion.",
-            "parameters": {"type": "object", "properties": {}}
+            "parameters": {
+                "type": "object", 
+                "properties": {"dummy": {"type": "string", "description": "Ignorar"}}
+            }
         }
     },
     {
@@ -387,6 +393,9 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                 response = await client.post(url, headers=headers, json={"model": groq_model, "messages": history}, timeout=30.0)
                 response.raise_for_status()
                 data = response.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Error HTTP de Groq: {e.response.status_code} - {e.response.text}")
+        raise RuntimeError(f"Error de API Groq: {e.response.text}")
     except Exception as e:
         logger.error(f"Error de conexión con Groq: {e}", exc_info=True)
         raise RuntimeError(f"Error al conectar con Groq: {str(e)}")
