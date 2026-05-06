@@ -34,27 +34,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = '''Eres un asistente útil y amigable para Telegram. 
-Responde siempre en el mismo idioma que el usuario. 
-Sé conciso pero completo en tus respuestas. 
-Usa formato Markdown si es necesario para resaltar información.
-
-REGLA CRÍTICA PARA FECHAS:
-- Si el usuario usa términos relativos como "hoy", "mañana", "pasado mañana" o "este lunes", DEBES llamar a 'get_current_time' PRIMERO para conocer la fecha exacta.
-- Nunca preguntes la fecha al usuario si puedes obtenerla con 'get_current_time'.'''
+SYSTEM_PROMPT = '''Eres un asistente personal de Telegram. 
+IMPORTANTE: NO escribas código Python ni expliques tus pasos.
+Si el usuario te pide crear un recordatorio, usa la herramienta 'get_current_time' internamente para obtener la fecha, y luego usa 'add_reminder' para agendarlo.
+Ejecuta las herramientas de manera silenciosa y luego confirma al usuario que lo has hecho.'''
 
 AVAILABLE_MODELS = {
-    "llama-3.1-8b-instant": {
-        "name": "⚡ Llama 3.1 8B Instant",
-        "limit": "30 req/min",
-        "speed": "Muy rápido",
-        "best_for": "Respuestas rápidas, bajo costo (RECOMENDADO)"
-    },
     "llama-3.3-70b-versatile": {
         "name": "🟠 Llama 3.3 70B Versatile",
         "limit": "30 req/min",
         "speed": "Rápido",
-        "best_for": "Tareas más complejas, contexto largo"
+        "best_for": "Tareas complejas y uso de herramientas (RECOMENDADO)"
+    },
+    "llama-3.1-8b-instant": {
+        "name": "⚡ Llama 3.1 8B Instant",
+        "limit": "30 req/min",
+        "speed": "Muy rápido",
+        "best_for": "Respuestas rápidas"
     }
 }
 
@@ -96,7 +92,7 @@ def save_user_preferences():
         logger.error(f"Error guardando preferencias: {e}")
 
 def get_user_model(user_id: int) -> str:
-    return user_settings.get(user_id, {}).get("model", "llama-3.1-8b-instant")
+    return user_settings.get(user_id, {}).get("model", "llama-3.3-70b-versatile")
 
 def set_user_model(user_id: int, model_name: str) -> None:
     if model_name not in AVAILABLE_MODELS:
