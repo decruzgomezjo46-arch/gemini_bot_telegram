@@ -317,11 +317,15 @@ async def process_groq_request(update: Update, prompt: str) -> str:
     groq_model = get_user_model(user_id)
     
     history = groq_chat_history.setdefault(user_id, [])
-    if not history:
-        history.append({"role": "system", "content": SYSTEM_PROMPT})
-
     current_time_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-    history.append({"role": "user", "content": f"[Info del Sistema - Hora actual: {current_time_str}]\n{prompt}"})
+    dynamic_system_prompt = f"{SYSTEM_PROMPT}\n\n[Info del Sistema: La hora y fecha actual es {current_time_str}]"
+    
+    if not history:
+        history.append({"role": "system", "content": dynamic_system_prompt})
+    elif history[0]["role"] == "system":
+        history[0]["content"] = dynamic_system_prompt
+
+    history.append({"role": "user", "content": prompt})
     
     if len(history) > 11:
         history = [history[0]] + history[-10:]
@@ -465,7 +469,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             
             dt_raw = datetime.fromisoformat(date_str)
             if dt_raw.tzinfo is None:
-                reminder_time = pytz.utc.localize(dt_raw).astimezone(tz)
+                reminder_time = tz.localize(dt_raw)
             else:
                 reminder_time = dt_raw.astimezone(tz)
                 
