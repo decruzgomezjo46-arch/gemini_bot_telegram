@@ -41,13 +41,7 @@ Usa formato Markdown si es necesario para resaltar información.
 
 REGLA CRÍTICA PARA FECHAS:
 - Si el usuario usa términos relativos como "hoy", "mañana", "pasado mañana" o "este lunes", DEBES llamar a 'get_current_time' PRIMERO para conocer la fecha exacta.
-- Nunca preguntes la fecha al usuario si puedes obtenerla con 'get_current_time'.
-
-Capacidades de agenda:
-Puedes gestionar recordatorios para el usuario en su base de datos de Notion usando las herramientas:
-1. 'add_reminder': para crear recordatorios en Notion.
-2. 'list_reminders': para ver qué recordatorios tiene activos.
-3. 'delete_reminder': para cancelar un recordatorio.'''
+- Nunca preguntes la fecha al usuario si puedes obtenerla con 'get_current_time'.'''
 
 AVAILABLE_MODELS = {
     "llama-3.1-8b-instant": {
@@ -405,6 +399,40 @@ async def process_groq_request(update: Update, prompt: str) -> str:
         assistant_content = data["choices"][0].get("message", {}).get("content", "")
         if assistant_content:
             history.append({"role": "assistant", "content": assistant_content})
+            
+            # Fallback para tags de función filtrados en texto plano
+            match = re.search(r'<function=([^>]+)>(.*?)</function>', assistant_content)
+            if match:
+                func_name = match.group(1)
+                try:
+                    func_args = json.loads(match.group(2))
+                    logger.info(f"Groq fallback tool call: {func_name} with {func_args}")
+                    
+                    if func_name in ["add_reminder", "list_reminders", "delete_reminder"]:
+                        func_args["user_id"] = user_id
+                        
+                    function_to_call = AVAILABLE_TOOLS.get(func_name)
+                    if function_to_call:
+                        sig = inspect.signature(function_to_call)
+                        filtered_args = {k: v for k, v in func_args.items() if k in sig.parameters}
+                        tool_result = function_to_call(**filtered_args)
+                        
+                        history.append({
+                            "role": "user", 
+                            "content": f"System (Tool Output): {str(tool_result)}\n\nAhora responde al usuario de manera natural confirmando la acción."
+                        })
+                        
+                        async with httpx.AsyncClient() as client:
+                            response = await client.post(url, headers=headers, json={"model": groq_model, "messages": history}, timeout=30.0)
+                            response.raise_for_status()
+                            data = response.json()
+                            if "choices" in data and len(data["choices"]) > 0:
+                                assistant_content = data["choices"][0].get("message", {}).get("content", "")
+                                if assistant_content:
+                                    history.append({"role": "assistant", "content": assistant_content})
+                except Exception as e:
+                    logger.error(f"Error procesando fallback tool: {e}")
+
             return assistant_content
     return ""
 
