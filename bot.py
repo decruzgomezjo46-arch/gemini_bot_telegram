@@ -121,10 +121,7 @@ def parse_notify_before(value: str) -> int:
 
 # --- TOOLS (IA) ---
 
-def get_current_time(timezone: str = "UTC", **kwargs) -> str:
-    """Devuelve la fecha y hora actual del sistema."""
-    current = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-    return current
+
 
 def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10, **kwargs) -> str:
     try:
@@ -183,29 +180,12 @@ def tool_delete_reminder(user_id: int, reminder_id: str, **kwargs) -> str:
         return f"Error borrando recordatorio: {e}"
 
 AVAILABLE_TOOLS = {
-    "get_current_time": get_current_time,
     "add_reminder": tool_add_reminder,
     "list_reminders": tool_list_reminders,
     "delete_reminder": tool_delete_reminder
 }
 
 GROQ_TOOLS_DEFINITION = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_time",
-            "description": "Retorna la fecha y hora actual para entender referencias temporales relativas (ej. hoy, mañana).",
-            "parameters": {
-                "type": "object", 
-                "properties": {
-                    "timezone": {
-                        "type": "string",
-                        "description": "Zona horaria opcional (ej. 'UTC')."
-                    }
-                }
-            }
-        }
-    },
     {
         "type": "function",
         "function": {
@@ -340,7 +320,8 @@ async def process_groq_request(update: Update, prompt: str) -> str:
     if not history:
         history.append({"role": "system", "content": SYSTEM_PROMPT})
 
-    history.append({"role": "user", "content": prompt})
+    current_time_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    history.append({"role": "user", "content": f"[Info del Sistema - Hora actual: {current_time_str}]\n{prompt}"})
     
     if len(history) > 11:
         history = [history[0]] + history[-10:]
