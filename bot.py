@@ -122,12 +122,12 @@ def parse_notify_before(value: str) -> int:
 
 # --- TOOLS (IA) ---
 
-def get_current_time() -> str:
+def get_current_time(timezone: str = "UTC", **kwargs) -> str:
     """Devuelve la fecha y hora actual del sistema."""
     current = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     return current
 
-def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10) -> str:
+def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_before: int = 10, **kwargs) -> str:
     try:
         dt = parse_datetime(target_time_str)
         if not dt:
@@ -149,7 +149,7 @@ def tool_add_reminder(user_id: int, text: str, target_time_str: str, notify_befo
     except Exception as e:
         return f"Error al crear recordatorio: {str(e)}"
 
-def tool_list_reminders(user_id: int) -> str:
+def tool_list_reminders(user_id: int, status: str = "Pendiente", **kwargs) -> str:
     try:
         active = notion_service.get_user_reminders(user_id)
         if not active:
@@ -176,7 +176,7 @@ def tool_list_reminders(user_id: int) -> str:
     except Exception as e:
         return f"Error leyendo Notion: {e}"
 
-def tool_delete_reminder(user_id: int, reminder_id: str) -> str:
+def tool_delete_reminder(user_id: int, reminder_id: str, **kwargs) -> str:
     try:
         notion_service.delete_reminder(reminder_id)
         return f"✅ Recordatorio {reminder_id} cancelado correctamente en Notion."
@@ -198,7 +198,12 @@ GROQ_TOOLS_DEFINITION = [
             "description": "Retorna la fecha y hora actual para entender referencias temporales relativas (ej. hoy, mañana).",
             "parameters": {
                 "type": "object", 
-                "properties": {"dummy": {"type": "string", "description": "Ignorar"}}
+                "properties": {
+                    "timezone": {
+                        "type": "string",
+                        "description": "Zona horaria opcional (ej. 'UTC')."
+                    }
+                }
             }
         }
     },
@@ -212,7 +217,7 @@ GROQ_TOOLS_DEFINITION = [
                 "properties": {
                     "text": {"type": "string", "description": "Descripción de la tarea."},
                     "target_time_str": {"type": "string", "description": "Fecha y hora en formato YYYY-MM-DD HH:MM."},
-                    "notify_before": {"type": "integer", "description": "Minutos de anticipación para avisar.", "default": 10}
+                    "notify_before": {"type": "integer", "description": "Minutos de anticipación para avisar."}
                 },
                 "required": ["text", "target_time_str"]
             }
@@ -225,7 +230,12 @@ GROQ_TOOLS_DEFINITION = [
             "description": "Lista los recordatorios activos del usuario guardados en Notion.",
             "parameters": {
                 "type": "object", 
-                "properties": {"dummy": {"type": "string", "description": "Ignorar"}}
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "description": "Estado opcional a filtrar."
+                    }
+                }
             }
         }
     },
