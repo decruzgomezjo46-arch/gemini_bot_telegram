@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 import pytz
+import inspect
+import tempfile
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -21,7 +23,6 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-import inspect
 import notion_service
 
 # Cargar variables de entorno
@@ -143,7 +144,35 @@ def tool_add_reminder(user_id: int, text: str, target_time_str: str, **kwargs) -
         
         return f"✅ Recordatorio creado en Notion. ID: {reminder_id}, Para: {dt.strftime('%Y-%m-%d %H:%M')}."
     except Exception as e:
-        return f"Error al crear recordatorio: {str(e)}"
+        return f"Error creando recordatorio: {e}"
+
+def tool_search_web(query: str, **kwargs) -> str:
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+            
+        if not results:
+            return "No se encontraron resultados en la web."
+            
+        formatted = [f"Título: {r.get('title')}\nExtracto: {r.get('body')}\nEnlace: {r.get('href')}" for r in results]
+        return "\n\n".join(formatted)
+    except Exception as e:
+        return f"Error buscando en la web: {e}"
+
+def tool_send_image(query: str, **kwargs) -> str:
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=1))
+            
+        if not results:
+            return "No se encontraron imágenes en la web para esa consulta."
+            
+        image_url = results[0].get('image')
+        return f"[IMAGEN: {image_url}]"
+    except Exception as e:
+        return f"Error buscando imagen: {e}"
 
 def tool_list_reminders(user_id: int, status: str = "Pendiente", **kwargs) -> str:
     try:
@@ -182,7 +211,9 @@ def tool_delete_reminder(user_id: int, reminder_id: str, **kwargs) -> str:
 AVAILABLE_TOOLS = {
     "add_reminder": tool_add_reminder,
     "list_reminders": tool_list_reminders,
-    "delete_reminder": tool_delete_reminder
+    "delete_reminder": tool_delete_reminder,
+    "search_web": tool_search_web,
+    "send_image": tool_send_image
 }
 
 GROQ_TOOLS_DEFINITION = [
@@ -228,6 +259,34 @@ GROQ_TOOLS_DEFINITION = [
                     "reminder_id": {"type": "string", "description": "ID del recordatorio a eliminar."}
                 },
                 "required": ["reminder_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Busca información actualizada en internet usando DuckDuckGo. Útil para responder preguntas sobre actualidad o datos que no sabes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Término de búsqueda."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_image",
+            "description": "Busca y envía una imagen al usuario usando DuckDuckGo Images. Debe usarse cuando el usuario pide explícitamente una foto o imagen.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Término de búsqueda de la imagen."}
+                },
+                "required": ["query"]
             }
         }
     }
@@ -400,6 +459,17 @@ async def process_groq_request(update: Update, prompt: str) -> str:
         if assistant_content:
             history.append({"role": "assistant", "content": assistant_content})
             
+            # Interceptar petición de imagen en el texto del LLM
+            img_match = re.search(r'\[IMAGEN:\s*(https?://[^\s\]]+)\]', assistant_content)
+            if img_match:
+                image_url = img_match.group(1)
+                try:
+                    await update.message.reply_photo(photo=image_url)
+                    assistant_content = assistant_content.replace(img_match.group(0), "").strip()
+                except Exception as e:
+                    logger.error(f"Error enviando imagen extraída: {e}")
+                    assistant_content += "\n*(No pude cargar la imagen obtenida de internet)*"
+            
             # Fallback para tags de función filtrados en texto plano
             match = re.search(r'<function=([^>]+)>(.*?)</function>', assistant_content)
             if match:
@@ -453,6 +523,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Error procesando mensaje: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error: {str(e)[:200]}", parse_mode=None)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message.voice: return
+    
+    await update.message.chat.send_action(action="record_voice")
+    
+    try:
+        file = await update.message.voice.get_file()
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            temp_path = f.name
+            
+        await file.download_to_drive(custom_path=temp_path)
+        
+        # Transcribir con Groq Whisper
+        url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+        
+        async with httpx.AsyncClient() as client:
+            with open(temp_path, "rb") as audio_file:
+                files = {"file": ("audio.ogg", audio_file, "audio/ogg")}
+                data = {"model": "whisper-large-v3-turbo"}
+                response = await client.post(url, headers=headers, data=data, files=files, timeout=60.0)
+                response.raise_for_status()
+                transcription = response.json().get("text", "")
+                
+        if transcription:
+            await update.message.reply_text(f"🎤 _Escuchado:_ {transcription}", parse_mode="Markdown")
+            await update.message.chat.send_action(action="typing")
+            assistant_text = await process_groq_request(update, transcription)
+            if assistant_text:
+                await update.message.reply_text(assistant_text, parse_mode=None)
+        else:
+            await update.message.reply_text("❌ No pude entender el audio.")
+            
+    except Exception as e:
+        logger.error(f"Error procesando audio: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Hubo un error procesando tu audio: {str(e)[:100]}")
+    finally:
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     now_tz = datetime.now(tz)
@@ -508,26 +618,28 @@ def main() -> None:
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     app.job_queue.run_repeating(check_reminders, interval=60, first=10)
 
-    # SERVIDOR DE SALUD PARA RENDER
-    def run_health_check():
-        class HealthCheckHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"Bot is alive!")
-            def log_message(self, format, *args):
-                pass
-        port = int(os.environ.get("PORT", "10000"))
-        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-        logger.info(f"Iniciando servidor de salud en puerto {port}...")
-        server.serve_forever()
+    # SERVIDOR DE SALUD PARA RENDER (Opcional en Termux)
+    if os.environ.get("RENDER"):
+        def run_health_check():
+            class HealthCheckHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Bot is alive!")
+                def log_message(self, format, *args):
+                    pass
+            port = int(os.environ.get("PORT", "10000"))
+            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            logger.info(f"Iniciando servidor de salud en puerto {port}...")
+            server.serve_forever()
 
-    health_thread = threading.Thread(target=run_health_check, daemon=True)
-    health_thread.start()
+        health_thread = threading.Thread(target=run_health_check, daemon=True)
+        health_thread.start()
 
     logger.info("El bot está en línea y escuchando mensajes...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
