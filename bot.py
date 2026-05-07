@@ -460,6 +460,19 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                         filtered_args = {k: v for k, v in (function_args or {}).items() if k in sig.parameters}
                         tool_result = function_to_call(**filtered_args)
                         
+                        # Si la herramienta devolvió una imagen, enviarla INMEDIATAMENTE
+                        if isinstance(tool_result, str) and tool_result.startswith("[IMAGEN:"):
+                            import re
+                            img_match = re.search(r'\[IMAGEN:\s*(https?://[^\s\]]+)\]', tool_result)
+                            if img_match:
+                                image_url = img_match.group(1)
+                                try:
+                                    await update.message.reply_photo(photo=image_url)
+                                    tool_result = "Imagen enviada al usuario con éxito."
+                                except Exception as e:
+                                    logger.error(f"Error enviando imagen extraída: {e}")
+                                    tool_result = f"Error enviando la imagen: {e}"
+                        
                         history.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
