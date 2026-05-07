@@ -492,9 +492,13 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                 response.raise_for_status()
                 data = response.json()
     except httpx.HTTPStatusError as e:
+        if history and history[-1]["role"] == "user":
+            history.pop()
         logger.error(f"Error HTTP de Groq: {e.response.status_code} - {e.response.text}")
         raise RuntimeError(f"Error de API Groq: {e.response.text}")
     except Exception as e:
+        if history and history[-1]["role"] == "user":
+            history.pop()
         logger.error(f"Error de conexión con Groq: {e}", exc_info=True)
         raise RuntimeError(f"Error al conectar con Groq: {str(e)}")
 
