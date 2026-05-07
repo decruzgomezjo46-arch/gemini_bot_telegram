@@ -307,7 +307,8 @@ GROQ_TOOLS_DEFINITION = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Término de búsqueda de la imagen."}
+                    "query": {"type": "string", "description": "Término de búsqueda de la imagen."},
+                    "dummy": {"type": "string", "description": "Deja este campo vacío."}
                 },
                 "required": ["query"]
             }
