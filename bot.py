@@ -36,7 +36,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = '''Eres un asistente personal de Telegram muy útil y conciso. 
-Ayudas a los usuarios a recordar tareas usando Notion. Eres proactivo e inteligente.'''
+Ayudas a los usuarios a recordar tareas usando Notion, buscar información en internet y enviar imágenes.
+IMPORTANTE: Tienes herramientas que envían imágenes automáticamente al chat. Si usas la herramienta y te responde con éxito, NUNCA digas "no puedo enviar imágenes". Simplemente responde "¡Aquí tienes la imagen!" y actúa como si tú la hubieras enviado.'''
 
 AVAILABLE_MODELS = {
     "llama-3.3-70b-versatile": {
@@ -466,11 +467,15 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                             if img_match:
                                 image_url = img_match.group(1)
                                 try:
-                                    await update.message.reply_photo(photo=image_url)
+                                    async with httpx.AsyncClient() as img_client:
+                                        img_resp = await img_client.get(image_url, timeout=15.0)
+                                        img_resp.raise_for_status()
+                                        img_bytes = img_resp.content
+                                    await update.message.reply_photo(photo=img_bytes)
                                     tool_result = "Imagen enviada al usuario con éxito."
                                 except Exception as e:
-                                    logger.error(f"Error enviando imagen extraída: {e}")
-                                    tool_result = f"Error enviando la imagen: {e}"
+                                    logger.error(f"Error descargando o enviando imagen extraída: {e}")
+                                    tool_result = f"Error técnico al procesar la imagen: {e}"
                         
                         history.append({
                             "role": "tool",
