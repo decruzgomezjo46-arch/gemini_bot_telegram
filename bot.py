@@ -170,7 +170,7 @@ def tool_search_web(query: str, **kwargs) -> str:
     except Exception as e:
         return f"Error buscando en la web: {e}"
 
-def tool_send_image(query: str, **kwargs) -> str:
+def tool_fetch_image(query: str, **kwargs) -> str:
     try:
         import httpx
         url = "https://es.wikipedia.org/w/api.php"
@@ -236,7 +236,7 @@ AVAILABLE_TOOLS = {
     "list_reminders": tool_list_reminders,
     "delete_reminder": tool_delete_reminder,
     "search_web": tool_search_web,
-    "send_image": tool_send_image
+    "fetch_image": tool_fetch_image
 }
 
 GROQ_TOOLS_DEFINITION = [
@@ -302,7 +302,7 @@ GROQ_TOOLS_DEFINITION = [
     {
         "type": "function",
         "function": {
-            "name": "send_image",
+            "name": "fetch_image",
             "description": "Busca y envía una imagen al usuario usando Wikipedia. Debe usarse cuando el usuario pide una foto o imagen.",
             "parameters": {
                 "type": "object",
