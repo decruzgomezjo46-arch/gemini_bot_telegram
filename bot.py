@@ -148,29 +148,52 @@ def tool_add_reminder(user_id: int, text: str, target_time_str: str, **kwargs) -
 
 def tool_search_web(query: str, **kwargs) -> str:
     try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
+        import httpx
+        import re
+        url = "https://es.wikipedia.org/w/api.php"
+        params = {"action": "query", "list": "search", "srsearch": query, "utf8": "1", "format": "json"}
+        with httpx.Client() as client:
+            resp = client.get(url, params=params, timeout=10.0)
+            data = resp.json()
             
+        results = data.get("query", {}).get("search", [])
         if not results:
-            return "No se encontraron resultados en la web."
+            return "No se encontraron resultados."
             
-        formatted = [f"Título: {r.get('title')}\nExtracto: {r.get('body')}\nEnlace: {r.get('href')}" for r in results]
+        formatted = []
+        for r in results[:3]:
+            # Limpiar HTML del extracto
+            clean_snippet = re.sub('<[^<]+>', '', r['snippet'])
+            formatted.append(f"Título: {r['title']}\nExtracto: {clean_snippet}")
+            
         return "\n\n".join(formatted)
     except Exception as e:
         return f"Error buscando en la web: {e}"
 
 def tool_send_image(query: str, **kwargs) -> str:
     try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=1))
+        import httpx
+        url = "https://es.wikipedia.org/w/api.php"
+        # Primero buscar el título del artículo
+        search_params = {"action": "query", "list": "search", "srsearch": query, "utf8": "1", "format": "json"}
+        with httpx.Client() as client:
+            search_data = client.get(url, params=search_params, timeout=10.0).json()
+            results = search_data.get("query", {}).get("search", [])
             
-        if not results:
-            return "No se encontraron imágenes en la web para esa consulta."
+            if not results:
+                return "No se encontraron imágenes."
+                
+            title = results[0]["title"]
+            # Obtener la imagen principal de ese artículo
+            img_params = {"action": "query", "prop": "pageimages", "titles": title, "format": "json", "pithumbsize": 800}
+            img_data = client.get(url, params=img_params, timeout=10.0).json()
+            pages = img_data.get("query", {}).get("pages", {})
             
-        image_url = results[0].get('image')
-        return f"[IMAGEN: {image_url}]"
+            for page_id, page_info in pages.items():
+                if "thumbnail" in page_info:
+                    return f"[IMAGEN: {page_info['thumbnail']['source']}]"
+                    
+        return "No se encontraron imágenes en el artículo principal."
     except Exception as e:
         return f"Error buscando imagen: {e}"
 
