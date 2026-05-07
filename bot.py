@@ -289,7 +289,7 @@ GROQ_TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "Busca información actualizada en internet usando DuckDuckGo. Útil para responder preguntas sobre actualidad o datos que no sabes.",
+            "description": "Busca información en internet usando Wikipedia. Útil para responder preguntas sobre datos que no sabes.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -303,7 +303,7 @@ GROQ_TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "send_image",
-            "description": "Busca y envía una imagen al usuario usando DuckDuckGo Images. Debe usarse cuando el usuario pide explícitamente una foto o imagen.",
+            "description": "Busca y envía una imagen al usuario usando Wikipedia. Debe usarse cuando el usuario pide una foto o imagen.",
             "parameters": {
                 "type": "object",
                 "properties": {
