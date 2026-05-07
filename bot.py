@@ -153,7 +153,8 @@ def tool_search_web(query: str, **kwargs) -> str:
         import re
         url = "https://es.wikipedia.org/w/api.php"
         params = {"action": "query", "list": "search", "srsearch": query, "utf8": "1", "format": "json"}
-        with httpx.Client() as client:
+        headers = {"User-Agent": "TelegramBotAsistente/1.0"}
+        with httpx.Client(headers=headers) as client:
             resp = client.get(url, params=params, timeout=10.0)
             data = resp.json()
             
@@ -177,7 +178,8 @@ def tool_fetch_image(query: str, **kwargs) -> str:
         url = "https://es.wikipedia.org/w/api.php"
         # Primero buscar el título del artículo
         search_params = {"action": "query", "list": "search", "srsearch": query, "utf8": "1", "format": "json"}
-        with httpx.Client() as client:
+        headers = {"User-Agent": "TelegramBotAsistente/1.0"}
+        with httpx.Client(headers=headers) as client:
             search_data = client.get(url, params=search_params, timeout=10.0).json()
             results = search_data.get("query", {}).get("search", [])
             
@@ -467,7 +469,8 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                             if img_match:
                                 image_url = img_match.group(1)
                                 try:
-                                    async with httpx.AsyncClient() as img_client:
+                                    headers = {"User-Agent": "TelegramBotAsistente/1.0"}
+                                    async with httpx.AsyncClient(headers=headers) as img_client:
                                         img_resp = await img_client.get(image_url, timeout=15.0)
                                         img_resp.raise_for_status()
                                         img_bytes = img_resp.content
