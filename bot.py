@@ -462,7 +462,6 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                         
                         # Si la herramienta devolvió una imagen, enviarla INMEDIATAMENTE
                         if isinstance(tool_result, str) and tool_result.startswith("[IMAGEN:"):
-                            import re
                             img_match = re.search(r'\[IMAGEN:\s*(https?://[^\s\]]+)\]', tool_result)
                             if img_match:
                                 image_url = img_match.group(1)
