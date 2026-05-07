@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = '''Eres un asistente personal de Telegram muy útil y conciso. 
 Ayudas a los usuarios a recordar tareas usando Notion, buscar información en internet y enviar imágenes.
-IMPORTANTE: Tienes herramientas que envían imágenes automáticamente al chat. Si usas la herramienta y te responde con éxito, NUNCA digas "no puedo enviar imágenes". Simplemente responde "¡Aquí tienes la imagen!" y actúa como si tú la hubieras enviado.'''
+IMPORTANTE: Tienes herramientas que envían imágenes automáticamente al chat. 
+- Si usas la herramienta fetch_image y te responde con éxito, NUNCA digas "no puedo enviar imágenes". Simplemente responde "¡Aquí tienes la imagen!" y actúa como si tú la hubieras enviado.
+- Si la herramienta te responde que "No se encontraron imágenes", dile amablemente al usuario que no pudiste encontrar una imagen para esa búsqueda.'''
 
 AVAILABLE_MODELS = {
     "llama-3.3-70b-versatile": {
@@ -469,8 +471,8 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                             if img_match:
                                 image_url = img_match.group(1)
                                 try:
-                                    headers = {"User-Agent": "TelegramBotAsistente/1.0"}
-                                    async with httpx.AsyncClient(headers=headers) as img_client:
+                                    img_headers = {"User-Agent": "TelegramBotAsistente/1.0"}
+                                    async with httpx.AsyncClient(headers=img_headers) as img_client:
                                         img_resp = await img_client.get(image_url, timeout=15.0)
                                         img_resp.raise_for_status()
                                         img_bytes = img_resp.content
@@ -492,13 +494,9 @@ async def process_groq_request(update: Update, prompt: str) -> str:
                 response.raise_for_status()
                 data = response.json()
     except httpx.HTTPStatusError as e:
-        if history and history[-1]["role"] == "user":
-            history.pop()
         logger.error(f"Error HTTP de Groq: {e.response.status_code} - {e.response.text}")
         raise RuntimeError(f"Error de API Groq: {e.response.text}")
     except Exception as e:
-        if history and history[-1]["role"] == "user":
-            history.pop()
         logger.error(f"Error de conexión con Groq: {e}", exc_info=True)
         raise RuntimeError(f"Error al conectar con Groq: {str(e)}")
 
